@@ -69,6 +69,7 @@ function CreatePackage(
     MSDocService = ""
     ServiceId = ""
     Notes = "Needs Review"
+    AllVersions = @()
   }
 
   $pkg | Add-Member -NotePropertyMembers $otherProps
