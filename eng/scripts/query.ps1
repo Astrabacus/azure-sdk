@@ -39,33 +39,50 @@ function Get-java-Packages
   $count = 0
   while ($count -lt $mavenQuery.response.numFound)
   {
-    $packages += $mavenQuery.response.docs | Foreach-Object { if ($_.g -ne "com.azure.android") { CreatePackage $_.a $_.latestVersion $_.g } }
+    $responsePackages = $mavenQuery.response.docs
+    foreach ($pkg in $responsePackages) {
+     if ($pkg.g -ne "com.azure.android") {
+        $p = CreatePackage $pkg.a $pkg.latestVersion $pkg.g
+        $packages += $p
+      }
+    }
     $count += $mavenQuery.response.docs.count
 
     $mavenQuery = Invoke-RestMethod ($baseMavenQueryUrl + "&start=$count") -MaximumRetryCount 3
   }
 
-  $repoTags = GetPackageVersions "java"
+  $allPackageVersionList = @()
 
-  foreach ($package in $packages)
-  {
-    # If package is in com.azure.resourcemanager groupid and we shipped it recently because it is in the last months repo tags
-    # then treat it as a new mgmt library
-    if ($package.GroupId -eq "com.azure.resourcemanager" `
-        -and $package.Package -match "^azure-resourcemanager-(?<serviceName>.*?)$" `
-        -and $repoTags.ContainsKey($package.Package))
-    {
-      $serviceName = (Get-Culture).TextInfo.ToTitleCase($matches["serviceName"])
-      $package.Type = "mgmt"
-      $package.New = "true"
-      $package.RepoPath = $matches["serviceName"].ToLower()
-      $package.ServiceName = $serviceName
-      $package.DisplayName = "Resource Management - $serviceName"
-      Write-Verbose "Marked package $($package.Package) as new mgmt package with version $($package.VersionGA + $package.VersionPreview)"
+  $pkgNum = 0
+  foreach ($pkg in $packages) {
+    $pkgNum += 1
+    $pkgName = $pkg.Package
+    Write-Host "$pkgNum - Getting all versions for $pkgName"
+    $versionsMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=a:${pkgName}&core=gav&rows=1000&wt=json"
+    $versionsQuery = Invoke-RestMethod $versionsMavenQueryUrl -MaximumRetryCount 3
+
+    $versions = $versionsQuery.response.docs
+    foreach ($ver in $versions) {
+      $verDate = [datetimeoffset]::FromUnixTimeMilliseconds($ver.timestamp).DateTime
+      $allPackageVersionList += ,(@($pkgName, $ver.v, $verDate))
     }
   }
 
-  return $packages
+  return $allPackageVersionList
+}
+
+function Get-java-Package-Buckets
+{
+    $packages = Get-java-Packages
+    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
+    $monthHash = @{}
+    foreach ($pkg in $recentPackages)
+    {
+        $month = Get-Date $pkg[2] -Format "yyyy-MM"
+        $monthHash[$month] = $monthHash[$month] + 1
+    }
+
+    return $monthHash | sort
 }
 
 function Get-dotnet-Packages
@@ -189,7 +206,7 @@ function Get-python-Package-Buckets
         $monthHash[$month] = $monthHash[$month] + 1
     }
 
-    return $monthHash
+    return $monthHash | sort
 }
 
 function Get-cpp-Packages
