@@ -30,7 +30,8 @@ function Get-android-Packages
 function Get-java-Packages
 {
   # Rest API docs https://search.maven.org/classic/#api
-  $baseMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=g:com.microsoft.azure*%20OR%20g:com.azure*&rows=100&wt=json"
+  $baseMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=g:com.azure*&rows=100&wt=json"
+  #$baseMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=g:com.microsoft.azure*%20OR%20g:com.azure*&rows=100&wt=json"
   $mavenQuery = Invoke-RestMethod $baseMavenQueryUrl -MaximumRetryCount 3
 
   Write-Host "Found $($mavenQuery.response.numFound) java packages on maven packages"
@@ -55,16 +56,29 @@ function Get-java-Packages
 
   $pkgNum = 0
   foreach ($pkg in $packages) {
+    if ($pkg.GroupId -like 'com.azure.spring*')
+    {
+      Write-Host "Skipping $($pkg.GroupId)"
+      continue
+    }
+
     $pkgNum += 1
     $pkgName = $pkg.Package
-    Write-Host "$pkgNum - Getting all versions for $pkgName"
     $versionsMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=a:${pkgName}&core=gav&rows=1000&wt=json"
     $versionsQuery = Invoke-RestMethod $versionsMavenQueryUrl -MaximumRetryCount 3
 
-    $versions = $versionsQuery.response.docs
-    foreach ($ver in $versions) {
-      $verDate = [datetimeoffset]::FromUnixTimeMilliseconds($ver.timestamp).DateTime
-      $allPackageVersionList += ,(@($pkgName, $ver.v, $verDate))
+    $count = 0
+    while ($count -lt $versionsQuery.response.numFound)
+    {
+      Write-Host "$pkgNum - $count - Getting versions for $($pkg.GroupId):$($pkg.Package)"
+      $versions = $versionsQuery.response.docs
+      foreach ($ver in $versions) {
+        $verDate = [datetimeoffset]::FromUnixTimeMilliseconds($ver.timestamp).DateTime
+        $allPackageVersionList += ,(@($pkgName, $ver.v, $verDate))
+      }
+      $count += $versionsQuery.response.docs.count
+
+      $versionsQuery = Invoke-RestMethod ($versionsMavenQueryUrl + "&start=$count") -MaximumRetryCount 3
     }
   }
 
@@ -82,6 +96,8 @@ function Get-java-Package-Buckets
         $monthHash[$month] = $monthHash[$month] + 1
     }
 
+    Write-Host "Total packages"
+    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
     return $monthHash | sort
 }
 
@@ -94,24 +110,6 @@ function Get-dotnet-Packages
 
   Write-Host "Found $($nugetQuery.totalHits) nuget packages"
   $packages = $nugetQuery.data | Foreach-Object { CreatePackage $_.id $_.version }
-
-  $repoTags = GetPackageVersions "dotnet"
-
-  foreach ($package in $packages)
-  {
-    # If package starts with Azure.ResourceManager. and we shipped it recently because it is in the last months repo tags
-    # then treat it as a new mgmt library
-    if ($package.Package -match "^Azure.ResourceManager.(?<serviceName>.*?)$" -and $repoTags.ContainsKey($package.Package))
-    {
-      $serviceName = (Get-Culture).TextInfo.ToTitleCase($matches["serviceName"])
-      $package.Type = "mgmt"
-      $package.New = "true"
-      $package.RepoPath = $matches["serviceName"].ToLower()
-      $package.ServiceName = $serviceName
-      $package.DisplayName = "Resource Management - $serviceName"
-      Write-Verbose "Marked package $($package.Package) as new mgmt package with version $($package.VersionGA + $package.VersionPreview)"
-    }
-  }
 
   return $packages
 }
