@@ -148,6 +148,10 @@ function Get-dotnet-Package-Buckets
     {
         $month = Get-Date $pkg[2] -Format "yyyy-MM"
         $monthHash[$month] = $monthHash[$month] + 1
+        if ($month -eq "2022-09")
+        {
+          Write-Host "$($pkg[0]) $($pkg[1])"
+        }
     }
 
     Write-Host "Total packages"
@@ -185,6 +189,7 @@ function Get-js-Packages
     if ($pkg.name -notlike '@azure*')
     {
       Write-Host "Skipping $($pkg.name)"
+      continue
     }
     Write-Host "$count - Getting versions for $($pkg.name)"
     $versions = npm show $pkg.name time --json | ConvertFrom-Json
@@ -233,10 +238,13 @@ function Get-python-Packages
     $packageVersion = $package.info.Version
     # $packageReleases = ,($package.releases.PSObject.Properties | % { @($package.info.name, $_.Name, $_.Value.upload_time?[0]) })
     $packageReleases = @()
+    $c = 0
     foreach ($prop in $package.releases.PSObject.Properties)
     {
       $packageReleases += ,(@($package.info.name, $prop.Name, $prop.Value.upload_time?[0]))
+      $c += 1
     }
+    Write-Host "$c $($package.info.name)"
     foreach ($pr in $packageReleases)
     {
       $releasesWithDate += ,($pr)
