@@ -2,7 +2,8 @@
 param (
   [string] $github_pat = $env:GITHUB_PAT,
   [array] $languages = @("java", "dotnet", "python", "js", "go", "cpp"),
-  [int] $daysAgo = 30
+  [int] $daysAgo = 30,
+  [string] $outPath = "package-data.csv"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -181,7 +182,7 @@ function Get-python-Packages
 function Get-cpp-Packages
 {
   $packages = @()
-  $offset = [DateTimeOffset]::UtcNow.AddMonths(-24)
+  $offset = [DateTimeOffset]::UtcNow.AddDays(-$daysAgo)
   $repoTags = GetPackageVersions -lang "cpp" -afterDate $offset
 
   Write-Host "Found $($repoTags.Count) recent tags in cpp repo"
@@ -202,7 +203,7 @@ function Get-cpp-Packages
 function Get-go-Packages
 {
   $packages = @()
-  $offset = [DateTimeOffset]::UtcNow.AddMonths(-24)
+  $offset = [DateTimeOffset]::UtcNow.AddDays(-$daysAgo)
   $repoTags = GetPackageVersions -lang "go" -afterDate $offset
 
   Write-Host "Found $($repoTags.Count) recent tags in go repo"
@@ -229,6 +230,31 @@ function Get-go-Packages
   return $allPackageVersionList
 }
 
+function Set-Package-Data($languages, $daysAgo, $outPath)
+{
+  $allPackages = @()
+  $header = @("PACKAGE", "VERSION", "DATE", "LANGUAGE")
+  foreach ($lang in $languages)
+  {
+    $packages = Invoke-Expression Get-$lang-Packages
+    foreach ($pkg in $packages)
+    {
+      $pkg += $lang
+      if ((Get-Date $pkg[2]) -ge ((Get-Date).AddDays(-$daysAgo)))
+      {
+        $allPackages += ,@($pkg)
+      }
+    }
+  }
+
+  $allPackages `
+    | Sort-Object { $_[2] } `  # Sort by date
+    | ForEach-Object { [PSCustomObject]@{ "DATE" = $_[2]; "PACKAGE" = $_[0]; "VERSION" = $_[1]; "LANGUAGE" = $_[3] } } `
+    | ConvertTo-Csv -UseQuotes Never `
+    | Out-File $outPath
+}
+
+# Helper function to view quick package counts for a time period in csv format
 function Get-Package-Buckets($languages, $daysAgo)
 {
   $today = Get-Date
@@ -281,5 +307,6 @@ function Get-Package-Buckets($languages, $daysAgo)
 
 if ($MyInvocation.InvocationName -ne ".")
 {
-  Get-Package-Buckets $Languages $daysAgo
+  # Get-Package-Buckets $Languages $daysAgo
+  Set-Package-Data $Languages $daysAgo $outPath
 }
