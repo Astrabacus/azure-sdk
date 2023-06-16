@@ -174,12 +174,47 @@ function Get-js-Packages
   } while ($npmQuery.objects.Count -ne 0);
 
   $publishedPackages = $npmPackages | Where-Object { $_.publisher.username -eq "azure-sdk" }
-  $otherPackages = $npmPackages | Where-Object { $_.publisher.username -ne "azure-sdk" }
 
   Write-Host "Found $($publishedPackages.Count) npm packages"
-  $packages = $publishedPackages | Foreach-Object { CreatePackage $_.name $_.version }
 
-  return $packages
+  $allPackageVersionList = @()
+  $count = 0
+
+  foreach ($pkg in $publishedPackages)
+  {
+    if ($pkg.name -notlike '@azure*')
+    {
+      Write-Host "Skipping $($pkg.name)"
+    }
+    Write-Host "$count - Getting versions for $($pkg.name)"
+    $versions = npm show $pkg.name time --json | ConvertFrom-Json
+    $releases = $versions.PSObject.Properties | Where-Object {
+      $_ -notlike "*created*" -and $_ -notlike "*modified*" -and $_ -notlike '*-dev*' -and $_ -notlike '*-alpha*'
+    }
+    foreach ($release in $releases)
+    {
+      $allPackageVersionList += ,(@($pkg.name, $release.Name, $release.Value))
+    }
+    $count += 1
+  }
+
+  return $allPackageVersionList
+}
+
+function Get-js-Package-Buckets
+{
+    $packages = Get-js-Packages
+    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
+    $monthHash = @{}
+    foreach ($pkg in $recentPackages)
+    {
+        $month = Get-Date $pkg[2] -Format "yyyy-MM"
+        $monthHash[$month] = $monthHash[$month] + 1
+    }
+
+    Write-Host "Total packages"
+    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
+    return $monthHash | sort
 }
 
 function Get-python-Packages
@@ -224,31 +259,58 @@ function Get-python-Package-Buckets
         $monthHash[$month] = $monthHash[$month] + 1
     }
 
+    Write-Host "Total packages"
+    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
     return $monthHash | sort
 }
 
 function Get-cpp-Packages
 {
   $packages = @()
-  $repoTags = GetPackageVersions "cpp"
+  $offset = [DateTimeOffset]::UtcNow.AddMonths(-24)
+  $repoTags = GetPackageVersions -lang "cpp" -afterDate $offset
 
   Write-Host "Found $($repoTags.Count) recent tags in cpp repo"
 
   foreach ($tag in $repoTags.Keys)
   {
     $versions = [AzureEngSemanticVersion]::SortVersions($repoTags[$tag].Versions)
-    $packages += CreatePackage $tag $versions[0]
+
+    foreach ($versionData in $repoTags[$tag].Versions)
+    {
+      $allPackageVersionList += ,(@($tag, $versionData.RawVersion, (Get-Date $versionData.Date)))
+    }
   }
 
-  return $packages
+  return $allPackageVersionList
+}
+
+function Get-cpp-Package-Buckets
+{
+    $packages = Get-cpp-Packages
+    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
+    $monthHash = @{}
+    foreach ($pkg in $recentPackages)
+    {
+        $month = Get-Date $pkg[2] -Format "yyyy-MM"
+        $monthHash[$month] = $monthHash[$month] + 1
+    }
+
+    Write-Host "Total packages"
+    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
+    return $monthHash | sort
 }
 
 function Get-go-Packages
 {
   $packages = @()
-  $repoTags = GetPackageVersions "go"
+  $offset = [DateTimeOffset]::UtcNow.AddMonths(-24)
+  $repoTags = GetPackageVersions -lang "go" -afterDate $offset
 
   Write-Host "Found $($repoTags.Count) recent tags in go repo"
+
+  $allPackageVersionList = @()
+  $count = 0
 
   foreach ($tag in $repoTags.Keys)
   {
@@ -259,36 +321,28 @@ function Get-go-Packages
     # We should keep this regex in sync with what is in the go repo at https://github.com/Azure/azure-sdk-for-go/blob/main/eng/scripts/Language-Settings.ps1#L40
     if ($package.Package -match "(?<modPath>(sdk|profile)/(?<serviceDir>(.*?(?<serviceName>[^/]+)/)?(?<modName>[^/]+$)))")
     {
-      #$modPath = $matches["modPath"] Not using modPath currently here but keeping the capture group to be consistent with the go repo
-      $modName = $matches["modName"]
-      $serviceDir = $matches["serviceDir"]
-      $serviceName = $matches["serviceName"]
-      if (!$serviceName) { $serviceName = $modName }
-
-      if ($modName.StartsWith("arm"))
+      foreach ($versionData in $repoTags[$tag].Versions)
       {
-        # Skip arm packages that aren't in the resourcemanager service folder
-        if (!$serviceDir.StartsWith("resourcemanager")) { continue }
-        $package.Type = "mgmt"
-        $package.New = "true"
-        $modName = $modName.Substring(3); # Remove arm from front
-        $package.DisplayName = "Resource Management - $((Get-Culture).TextInfo.ToTitleCase($modName))"
-        Write-Verbose "Marked package $($package.Package) as new mgmt package with version $($package.VersionGA + $package.VersionPreview)"
+        $allPackageVersionList += ,(@($tag, $versionData.RawVersion, (Get-Date $versionData.Date)))
       }
-      elseif ($modName.StartsWith("az"))
-      {
-        $package.Type = "client"
-        $package.New = "true"
-        $modName = $modName.Substring(2); # Remove az from front
-        $package.DisplayName = $((Get-Culture).TextInfo.ToTitleCase($modName))
-      }
-
-      $package.ServiceName = (Get-Culture).TextInfo.ToTitleCase($serviceName)
-      $package.RepoPath = $serviceDir.ToLower()
-
-      $packages += $package
     }
   }
 
-  return $packages
+  return $allPackageVersionList
+}
+
+function Get-go-Package-Buckets
+{
+    $packages = Get-go-Packages
+    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
+    $monthHash = @{}
+    foreach ($pkg in $recentPackages)
+    {
+        $month = Get-Date $pkg[2] -Format "yyyy-MM"
+        $monthHash[$month] = $monthHash[$month] + 1
+    }
+
+    Write-Host "Total packages"
+    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
+    return $monthHash | sort
 }
