@@ -109,10 +109,52 @@ function Get-dotnet-Packages
   $nugetQuery = Invoke-RestMethod "https://azuresearch-usnc.nuget.org/query?q=owner:azure-sdk&prerelease=true&semVerLevel=2.0.0&take=1000" -MaximumRetryCount 3
 
   Write-Host "Found $($nugetQuery.totalHits) nuget packages"
-  $packages = $nugetQuery.data | Foreach-Object { CreatePackage $_.id $_.version }
+  # $packages = $nugetQuery.data | Foreach-Object { CreatePackage $_.id $_.version }
+  $packages = $nugetQuery.data
+  $allPackageVersionList = @()
 
-  return $packages
+  $count = 0
+  foreach ($pkg in $packages)
+  {
+    if ($pkg.title -notlike 'Azure.*' -and $pkg.title -notlike 'Microsoft.Azure.*')
+    {
+      Write-Host "Skipping $($pkg.title)"
+      continue
+    }
+    Write-Host "$count - Getting versions for $($pkg.title)"
+    $versionsQuery = Invoke-RestMethod $pkg.registration -MaximumRetryCount 3
+    $versions = $versionsQuery.items
+    foreach ($versionGroup in $versions)
+    {
+      foreach ($versionData in $versionGroup.items)
+      {
+        $version = ($versionData.packageContent -split '/')[5]
+        $time = $versionData.commitTimeStamp
+        $allPackageVersionList += ,(@($pkg.title, $version, $time))
+      }
+    }
+    $count += 1
+  }
+
+  return $allPackageVersionList
 }
+
+function Get-dotnet-Package-Buckets
+{
+    $packages = Get-dotnet-Packages
+    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
+    $monthHash = @{}
+    foreach ($pkg in $recentPackages)
+    {
+        $month = Get-Date $pkg[2] -Format "yyyy-MM"
+        $monthHash[$month] = $monthHash[$month] + 1
+    }
+
+    Write-Host "Total packages"
+    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
+    return $monthHash | sort
+}
+
 
 function Get-js-Packages
 {
@@ -134,30 +176,8 @@ function Get-js-Packages
   $publishedPackages = $npmPackages | Where-Object { $_.publisher.username -eq "azure-sdk" }
   $otherPackages = $npmPackages | Where-Object { $_.publisher.username -ne "azure-sdk" }
 
-  foreach ($otherPackage in $otherPackages) {
-    Write-Verbose "Not updating package $($otherPackage.name) because the publisher is $($otherPackage.publisher.username) and not azure-sdk"
-  }
-
   Write-Host "Found $($publishedPackages.Count) npm packages"
   $packages = $publishedPackages | Foreach-Object { CreatePackage $_.name $_.version }
-
-  $repoTags = GetPackageVersions "js"
-
-  foreach ($package in $packages)
-  {
-    # If package starts with arm- and we shipped it recently because it is in the last months repo tags
-    # then treat it as a new mgmt library
-    if ($package.Package -match "^@azure/arm-(?<serviceName>.*?)(-profile.*)?$" -and $repoTags.ContainsKey($package.Package))
-    {
-      $serviceName = (Get-Culture).TextInfo.ToTitleCase($matches["serviceName"])
-      $package.Type = "mgmt"
-      $package.New = "true"
-      $package.RepoPath = $matches["serviceName"].ToLower()
-      $package.ServiceName = $serviceName
-      $package.DisplayName = "Resource Management - $serviceName"
-      Write-Verbose "Marked package $($package.Package) as new mgmt package with version $($package.VersionGA + $package.VersionPreview)"
-    }
-  }
 
   return $packages
 }
