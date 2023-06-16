@@ -1,37 +1,19 @@
 [CmdletBinding()]
 param (
-  [string] $github_pat = $env:GITHUB_PAT
+  [string] $github_pat = $env:GITHUB_PAT,
+  [array] $languages = @("java", "dotnet", "python", "js", "go", "cpp"),
+  [int] $daysAgo = 30
 )
-# Set-StrictMode -Version 3
+
+$ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot PackageList-Helpers.ps1)
-
-function Get-android-Packages
-{
-  # Rest API docs https://search.maven.org/classic/#api
-  $baseMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=g:com.azure.android&rows=100&wt=json"
-  $mavenQuery = Invoke-RestMethod "https://search.maven.org/solrsearch/select?q=g:com.azure.android&rows=2000&wt=json" -MaximumRetryCount 3
-
-  Write-Host "Found $($mavenQuery.response.numFound) android packages on maven packages"
-
-  $packages = @()
-  $count = 0
-  while ($count -lt $mavenQuery.response.numFound)
-  {
-    $packages += $mavenQuery.response.docs | Foreach-Object { CreatePackage $_.a $_.latestVersion $_.g }
-    $count += $mavenQuery.response.docs.count
-
-    $mavenQuery = Invoke-RestMethod ($baseMavenQueryUrl + "&start=$count") -MaximumRetryCount 3
-  }
-
-  return $packages
-}
 
 function Get-java-Packages
 {
   # Rest API docs https://search.maven.org/classic/#api
-  $baseMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=g:com.azure*&rows=100&wt=json"
-  #$baseMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=g:com.microsoft.azure*%20OR%20g:com.azure*&rows=100&wt=json"
+  # $baseMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=g:com.azure*&rows=100&wt=json"
+  $baseMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=g:com.microsoft.azure*%20OR%20g:com.azure*&rows=100&wt=json"
   $mavenQuery = Invoke-RestMethod $baseMavenQueryUrl -MaximumRetryCount 3
 
   Write-Host "Found $($mavenQuery.response.numFound) java packages on maven packages"
@@ -62,7 +44,7 @@ function Get-java-Packages
       continue
     }
 
-    $pkgNum += 1
+    $pkgNum++
     $pkgName = $pkg.Package
     $versionsMavenQueryUrl = "https://search.maven.org/solrsearch/select?q=a:${pkgName}&core=gav&rows=1000&wt=json"
     $versionsQuery = Invoke-RestMethod $versionsMavenQueryUrl -MaximumRetryCount 3
@@ -85,22 +67,6 @@ function Get-java-Packages
   return $allPackageVersionList
 }
 
-function Get-java-Package-Buckets
-{
-    $packages = Get-java-Packages
-    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
-    $monthHash = @{}
-    foreach ($pkg in $recentPackages)
-    {
-        $month = Get-Date $pkg[2] -Format "yyyy-MM"
-        $monthHash[$month] = $monthHash[$month] + 1
-    }
-
-    Write-Host "Total packages"
-    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
-    return $monthHash | sort
-}
-
 function Get-dotnet-Packages
 {
   # Rest API docs
@@ -113,15 +79,15 @@ function Get-dotnet-Packages
   $packages = $nugetQuery.data
   $allPackageVersionList = @()
 
-  $count = 0
+  $pkgNum = 0
   foreach ($pkg in $packages)
   {
-    if ($pkg.title -notlike 'Azure.*') # -and $pkg.title -notlike 'Microsoft.Azure.*')
+    if ($pkg.title -notlike 'Azure.*' -and $pkg.title -notlike 'Microsoft.Azure.*')
     {
       Write-Host "Skipping $($pkg.title)"
       continue
     }
-    Write-Host "$count - Getting versions for $($pkg.title)"
+    Write-Host "$pkgNum - Getting versions for $($pkg.title)"
     $versionsQuery = Invoke-RestMethod $pkg.registration -MaximumRetryCount 3
     $versions = $versionsQuery.items
     foreach ($versionGroup in $versions)
@@ -133,30 +99,10 @@ function Get-dotnet-Packages
         $allPackageVersionList += ,(@($pkg.title, $version, $time))
       }
     }
-    $count += 1
+    $pkgNum++
   }
 
   return $allPackageVersionList
-}
-
-function Get-dotnet-Package-Buckets
-{
-    $packages = Get-dotnet-Packages
-    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
-    $monthHash = @{}
-    foreach ($pkg in $recentPackages)
-    {
-        $month = Get-Date $pkg[2] -Format "yyyy-MM"
-        $monthHash[$month] = $monthHash[$month] + 1
-        if ($month -eq "2022-09")
-        {
-          Write-Host "$($pkg[0]) $($pkg[1])"
-        }
-    }
-
-    Write-Host "Total packages"
-    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
-    return $monthHash | sort
 }
 
 
@@ -182,16 +128,11 @@ function Get-js-Packages
   Write-Host "Found $($publishedPackages.Count) npm packages"
 
   $allPackageVersionList = @()
-  $count = 0
+  $pkgNum = 0
 
   foreach ($pkg in $publishedPackages)
   {
-    if ($pkg.name -notlike '@azure*')
-    {
-      Write-Host "Skipping $($pkg.name)"
-      continue
-    }
-    Write-Host "$count - Getting versions for $($pkg.name)"
+    Write-Host "$pkgNum - Getting versions for $($pkg.name)"
     $versions = npm show $pkg.name time --json | ConvertFrom-Json
     $releases = $versions.PSObject.Properties | Where-Object {
       $_ -notlike "*created*" -and $_ -notlike "*modified*" -and $_ -notlike '*-dev*' -and $_ -notlike '*-alpha*'
@@ -200,26 +141,10 @@ function Get-js-Packages
     {
       $allPackageVersionList += ,(@($pkg.name, $release.Name, $release.Value))
     }
-    $count += 1
+    $pkgNum++
   }
 
   return $allPackageVersionList
-}
-
-function Get-js-Package-Buckets
-{
-    $packages = Get-js-Packages
-    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
-    $monthHash = @{}
-    foreach ($pkg in $recentPackages)
-    {
-        $month = Get-Date $pkg[2] -Format "yyyy-MM"
-        $monthHash[$month] = $monthHash[$month] + 1
-    }
-
-    Write-Host "Total packages"
-    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
-    return $monthHash | sort
 }
 
 function Get-python-Packages
@@ -236,40 +161,21 @@ function Get-python-Packages
     if ($package.info.name -notlike "azure-*") { Write-Host "Skipping $($package.info.name)"; continue }
 
     $packageVersion = $package.info.Version
-    # $packageReleases = ,($package.releases.PSObject.Properties | % { @($package.info.name, $_.Name, $_.Value.upload_time?[0]) })
     $packageReleases = @()
-    $c = 0
+    $pkgNum = 0
     foreach ($prop in $package.releases.PSObject.Properties)
     {
       $packageReleases += ,(@($package.info.name, $prop.Name, $prop.Value.upload_time?[0]))
-      $c += 1
+      $pkgNum++
     }
-    Write-Host "$c $($package.info.name)"
+    Write-Host "$pkgNum - $($package.info.name)"
     foreach ($pr in $packageReleases)
     {
       $releasesWithDate += ,($pr)
     }
-    # $item = $package.releases.PSObject.Properties | % { @($package.info.name, $_.Name, $_.Value) }
-    # $releasesWithDate += $package.releases.PSObject.Properties | % { @($package.info.name, $_.Name, $_.Value) }
   }
 
   return $releasesWithDate
-}
-
-function Get-python-Package-Buckets
-{
-    $packages = Get-python-Packages
-    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
-    $monthHash = @{}
-    foreach ($pkg in $recentPackages)
-    {
-        $month = Get-Date $pkg[2] -Format "yyyy-MM"
-        $monthHash[$month] = $monthHash[$month] + 1
-    }
-
-    Write-Host "Total packages"
-    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
-    return $monthHash | sort
 }
 
 function Get-cpp-Packages
@@ -291,22 +197,6 @@ function Get-cpp-Packages
   }
 
   return $allPackageVersionList
-}
-
-function Get-cpp-Package-Buckets
-{
-    $packages = Get-cpp-Packages
-    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
-    $monthHash = @{}
-    foreach ($pkg in $recentPackages)
-    {
-        $month = Get-Date $pkg[2] -Format "yyyy-MM"
-        $monthHash[$month] = $monthHash[$month] + 1
-    }
-
-    Write-Host "Total packages"
-    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
-    return $monthHash | sort
 }
 
 function Get-go-Packages
@@ -339,18 +229,57 @@ function Get-go-Packages
   return $allPackageVersionList
 }
 
-function Get-go-Package-Buckets
+function Get-Package-Buckets($languages, $daysAgo)
 {
-    $packages = Get-go-Packages
-    $recentPackages = $packages | ? { $_[2] -ge (Get-Date).AddYears(-2) }
-    $monthHash = @{}
+  $today = Get-Date
+  $dayHash = @{}
+  $datePos = 0
+  while ($datePos -ge -$daysAgo)
+  {
+    # Zero value all dates so data explorer queries and charts are easier to normalize
+    $day = Get-Date $today.AddDays($datePos) -Format "yyyy-MM-dd"
+    $dayHash[$day] = @{}
+    foreach ($lang in $languages)
+    {
+      $dayHash[$day][$lang] = 0
+    }
+    $datePos--
+  }
+
+  foreach ($lang in $languages)
+  {
+    $total = 0
+    $packages = Invoke-Expression Get-$lang-Packages
+    $recentPackages = $packages | ? { $_[2] -ge $today.AddDays(-$daysAgo) }
     foreach ($pkg in $recentPackages)
     {
-        $month = Get-Date $pkg[2] -Format "yyyy-MM"
-        $monthHash[$month] = $monthHash[$month] + 1
+      $day = Get-Date $pkg[2] -Format "yyyy-MM-dd"
+      $dayHash[$day][$lang] = $dayHash[$day][$lang] + 1
+      $total++
     }
 
-    Write-Host "Total packages"
-    Write-Host ($monthHash.GetEnumerator() | % { $total = 0 } { $total += $_.Value } { $total })
-    return $monthHash | sort
+    Write-Host "Total packages for $lang - $total"
+  }
+
+  $header = @("DATE")
+  foreach($lang in $languages)
+  {
+    $header += $lang.ToUpper()
+  }
+  Write-Host ($header -join ",")
+
+  foreach ($day in $dayHash.GetEnumerator())
+  {
+    $line = @($day)
+    foreach($lang in $languages)
+    {
+      $line += $dayHash[$day][$lang]
+    }
+    Write-Host ($line -join ",")
+  }
+}
+
+if ($MyInvocation.InvocationName -ne ".")
+{
+  Get-Package-Buckets $Languages $daysAgo
 }
