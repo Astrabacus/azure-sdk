@@ -268,7 +268,7 @@ function Get-Package-Buckets($languages, $daysAgo)
   }
   Write-Host ($header -join ",")
 
-  foreach ($day in $dayHash.GetEnumerator())
+  foreach ($day in $dayHash.Keys)
   {
     $line = @($day)
     foreach($lang in $languages)
