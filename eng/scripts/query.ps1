@@ -116,7 +116,7 @@ function Get-dotnet-Packages
   $count = 0
   foreach ($pkg in $packages)
   {
-    if ($pkg.title -notlike 'Azure.*' -and $pkg.title -notlike 'Microsoft.Azure.*')
+    if ($pkg.title -notlike 'Azure.*') # -and $pkg.title -notlike 'Microsoft.Azure.*')
     {
       Write-Host "Skipping $($pkg.title)"
       continue
@@ -129,7 +129,7 @@ function Get-dotnet-Packages
       foreach ($versionData in $versionGroup.items)
       {
         $version = ($versionData.packageContent -split '/')[5]
-        $time = $versionData.commitTimeStamp
+        $time = $versionData.catalogEntry.published
         $allPackageVersionList += ,(@($pkg.title, $version, $time))
       }
     }
